@@ -14,6 +14,8 @@ ifndef PULL_SECRET
 	$(error PULL_SECRET must be defined)
 endif
 
+IP_STACK ?= v4
+
 INSTALLATION_DISK ?= /dev/vda
 RELEASE_VERSION ?= 4.13.5
 RELEASE_ARCH ?= x86_64
@@ -33,15 +35,21 @@ INSTALLER_ISO_PATH_SNO = $(SNO_DIR)/installer-SNO-image.iso
 INSTALLER_ISO_PATH_SNO_IN_LIBVIRT = $(LIBVIRT_ISO_PATH)/installer-SNO-image.iso
 LIBVIRT_GRAPHICS ?= vnc
 
-MACHINE_NETWORK ?= 192.168.126.0/24
-CLUSTER_NETWORK ?= 10.128.0.0/14
-CLUSTER_SVC_NETWORK ?= 172.30.0.0/16
+MACHINE_NETWORK_V4 ?= $(if $(MACHINE_NETWORK),$(MACHINE_NETWORK),192.168.126.0/24)
+MACHINE_NETWORK_V6 ?= fd00:0:0:126::/64
+CLUSTER_NETWORK_V4 ?= 10.128.0.0/14
+CLUSTER_NETWORK_V6 ?= fd01:0:0:0::/48
+CLUSTER_SVC_NETWORK_V4 ?= 172.30.0.0/16
+CLUSTER_SVC_NETWORK_V6 ?= fd02:0:0:0::/112
+CLUSTER_NETWORK_HOSTPREFIX_V4 ?= 23
+CLUSTER_NETWORK_HOSTPREFIX_V6 ?= 64
 CLUSTER_NAME ?= test-cluster
 BASE_DOMAIN ?= redhat.com
 RAM_MB ?= 16384
 CPU_CORE ?= 8
 DISK_GB ?= 130
 AGENT_CONFIG ?= agent-config.yaml
+AGENT_CONFIG_RENDER ?= 0
 
 INSTALL_CONFIG_TEMPLATE = $(SNO_DIR)/install-config.yaml.template
 INSTALL_CONFIG = $(SNO_DIR)/install-config.yaml
@@ -59,7 +67,7 @@ NET_NAME ?= test-net
 NET_UUID ?= a29bce40-ce15-43c8-9142-fd0a3cc37f9a
 NET_BRIDGE_NAME ?= tt0
 NET_MAC ?= 52:54:00:e0:8d:fe
-NET_PREFIX ?= $(shell echo $(MACHINE_NETWORK) | cut -d . -f 1-3)
+NET_PREFIX ?= $(shell echo $(MACHINE_NETWORK_V4) | cut -d . -f 1-3)
 VM_NAME ?= sno1
 VOL_NAME = $(VM_NAME).qcow2
 POOL ?= default
@@ -71,9 +79,12 @@ SSH_FLAGS = -o IdentityFile=$(SSH_KEY_PRIV_PATH) \
  			-o UserKnownHostsFile=/dev/null \
  			-o StrictHostKeyChecking=no
 
-HOST_IP ?= 192.168.126.10
+HOST_IP_V4 ?= 192.168.126.10
+HOST_IP_V6 ?= fd00:0:0:126::10
 HOST_MAC ?= 52:54:00:ee:42:e1
-SSH_HOST = core@$(HOST_IP)
+HOST_IFNAME ?= ens3
+HOST_IP_PRIMARY = $(if $(filter v6 v6v4,$(IP_STACK)),$(HOST_IP_V6),$(HOST_IP_V4))
+SSH_HOST = core@$(if $(findstring :,$(HOST_IP_PRIMARY)),[$(HOST_IP_PRIMARY)],$(HOST_IP_PRIMARY))
 
 $(SSH_KEY_PRIV_PATH):
 	@echo "No private key $@ found, generating a private-public pair"
@@ -123,32 +134,44 @@ destroy-libvirt-net:
 	$(SNO_DIR)/virt-delete-net.sh || true
 
 # Render the install config from the template with the correct pull secret and SSH key
-$(INSTALL_CONFIG): $(INSTALL_CONFIG_TEMPLATE) checkenv $(SSH_KEY_PUB_PATH)
-	sed -e 's|YOUR_PULL_SECRET|$(PULL_SECRET)|' \
-	    -e 's|YOUR_SSH_KEY|$(shell cat $(SSH_KEY_PUB_PATH))|' \
-	    -e 's|INSTALLATION_DISK|$(INSTALLATION_DISK)|' \
-	    -e 's|CLUSTER_NAME|$(CLUSTER_NAME)|' \
-	    -e 's|BASE_DOMAIN|$(BASE_DOMAIN)|' \
-	    -e 's|CLUSTER_NETWORK|$(CLUSTER_NETWORK)|' \
-	    -e 's|MACHINE_NETWORK|$(MACHINE_NETWORK)|' \
-	    -e 's|CLUSTER_SVC_NETWORK|$(CLUSTER_SVC_NETWORK)|' \
-	    $(INSTALL_CONFIG_TEMPLATE) > $(INSTALL_CONFIG)
+$(INSTALL_CONFIG): $(INSTALL_CONFIG_TEMPLATE) checkenv $(SSH_KEY_PUB_PATH) registry-config.json
+	$(info Generating $(INSTALL_CONFIG))
+	@IP_STACK=$(IP_STACK) \
+	MACHINE_NETWORK_V4=$(MACHINE_NETWORK_V4) \
+	MACHINE_NETWORK_V6=$(MACHINE_NETWORK_V6) \
+	CLUSTER_NETWORK_V4=$(CLUSTER_NETWORK_V4) \
+	CLUSTER_NETWORK_V6=$(CLUSTER_NETWORK_V6) \
+	CLUSTER_SVC_NETWORK_V4=$(CLUSTER_SVC_NETWORK_V4) \
+	CLUSTER_SVC_NETWORK_V6=$(CLUSTER_SVC_NETWORK_V6) \
+	CLUSTER_NETWORK_HOSTPREFIX_V4=$(CLUSTER_NETWORK_HOSTPREFIX_V4) \
+	CLUSTER_NETWORK_HOSTPREFIX_V6=$(CLUSTER_NETWORK_HOSTPREFIX_V6) \
+	INSTALLATION_DISK=$(INSTALLATION_DISK) \
+	CLUSTER_NAME=$(CLUSTER_NAME) \
+	BASE_DOMAIN=$(BASE_DOMAIN) \
+	python3 $(SNO_DIR)/render-install-config.py \
+		--pull-secret-file registry-config.json \
+		--ssh-key-file $(SSH_KEY_PUB_PATH) \
+		--output $(INSTALL_CONFIG)
 
 # Render the libvirt net config file with the network name and host IP
 $(NET_CONFIG): $(NET_CONFIG_TEMPLATE)
-	sed -e 's/REPLACE_NET_NAME/$(NET_NAME)/' \
-	    -e 's|REPLACE_NET_UUID|$(NET_UUID)|' \
-	    -e 's/REPLACE_NET_BRIDGE_NAME/$(NET_BRIDGE_NAME)/' \
-	    -e 's/REPLACE_NET_MAC/$(NET_MAC)/' \
-	    -e 's/REPLACE_NET_PREFIX/$(NET_PREFIX)/g' \
-	    -e 's|BASE_DOMAIN|$(BASE_DOMAIN)|' \
-	    $(NET_CONFIG_TEMPLATE) > $@
+	IP_STACK=$(IP_STACK) \
+	MACHINE_NETWORK_V4=$(MACHINE_NETWORK_V4) \
+	MACHINE_NETWORK_V6=$(MACHINE_NETWORK_V6) \
+	HOST_IP_V6=$(HOST_IP_V6) \
+	NET_NAME=$(NET_NAME) \
+	NET_UUID=$(NET_UUID) \
+	NET_BRIDGE_NAME=$(NET_BRIDGE_NAME) \
+	NET_MAC=$(NET_MAC) \
+	BASE_DOMAIN=$(BASE_DOMAIN) \
+	python3 $(SNO_DIR)/render-net-xml.py --output $@
 
 network: $(NET_CONFIG)
 	NET_NAME=$(NET_NAME) \
 	NET_UUID=$(NET_UUID) \
+	NET_BRIDGE_NAME=$(NET_BRIDGE_NAME) \
 	NET_XML=$(NET_CONFIG) \
-	HOST_IP=$(HOST_IP) \
+	HOST_IP=$(HOST_IP_PRIMARY) \
 	CLUSTER_NAME=$(CLUSTER_NAME) \
 	BASE_DOMAIN=$(BASE_DOMAIN) \
 	$(SNO_DIR)/virt-create-net.sh
@@ -217,7 +240,19 @@ start-iso: $(INSTALLER_ISO_PATH_SNO_IN_LIBVIRT) network
 	$(SNO_DIR)/virt-install-sno-iso-ign.sh
 
 $(AGENT_CONFIG_IN_WORKDIR): $(AGENT_CONFIG) $(INSTALLER_WORKDIR)
-	sudo cp $< $@
+	@if [ "$(AGENT_CONFIG_RENDER)" = "1" ]; then \
+		IP_STACK=$(IP_STACK) \
+		MACHINE_NETWORK_V4=$(MACHINE_NETWORK_V4) \
+		MACHINE_NETWORK_V6=$(MACHINE_NETWORK_V6) \
+		HOST_IP_V4=$(HOST_IP_V4) \
+		HOST_IP_V6=$(HOST_IP_V6) \
+		HOST_NAME=$(VM_NAME) \
+		HOST_MAC=$(HOST_MAC) \
+		HOST_IFNAME=$(HOST_IFNAME) \
+		python3 $(SNO_DIR)/render-agent-config.py --output $@ ; \
+	else \
+		sudo cp $< $@ ; \
+	fi
 
 # Generate an agent based ISO
 $(ABI_ISO_PATH): $(INSTALLER_BIN) $(AGENT_CONFIG_IN_WORKDIR) $(INSTALL_CONFIG_IN_WORKDIR)
@@ -253,15 +288,19 @@ abi-wait-complete: $(INSTALLER_BIN)
 	INSTALLER_WORKDIR=$(INSTALLER_WORKDIR) \
 	$(SNO_DIR)/wait-abi-complete.sh
 
-# Configure dhcp and dns for host
+# Configure dns records for the host (DHCP reservations are optional)
 .PHONY: host-net-config
 host-net-config:
-	HOST_IP=$(HOST_IP) \
+	IP_STACK=$(IP_STACK) \
+	HOST_IP=$(HOST_IP_PRIMARY) \
+	HOST_IP_V4=$(HOST_IP_V4) \
+	HOST_IP_V6=$(HOST_IP_V6) \
 	CLUSTER_NAME=$(CLUSTER_NAME) \
 	BASE_DOMAIN=$(BASE_DOMAIN) \
 	NET_NAME=$(NET_NAME) \
 	HOST_NAME=$(VM_NAME) \
 	HOST_MAC=$(HOST_MAC) \
+	CONFIGURE_DHCP=0 \
 	$(SNO_DIR)/host-net-config.sh
 
 ssh: $(SSH_KEY_PRIV_PATH)
@@ -278,6 +317,6 @@ gather:
 	@echo If this fails, try killing running SSH agent instances. Installer will prefer those \
 over your explicitly provided key file
 	$(INSTALLER_BIN) gather bootstrap \
-	--bootstrap $(HOST_IP) \
-	--master $(HOST_IP) \
+	--bootstrap $(HOST_IP_PRIMARY) \
+	--master $(HOST_IP_PRIMARY) \
 	--key $(SSH_KEY_PRIV_PATH)

@@ -20,9 +20,13 @@ Since the manual mode does not have strong dependencies on any platform (i.e., p
 
 - Create a workdir for the installer - `mkdir sno-workdir`
 - Create an `install-config.yaml` in the sno-workdir. An example file can be found in `./install-config.yaml.template`. There are a small number of fields in the template that should be set by hand. Reasonable defaults are given below.
-    * `MACHINE_NETWORK` - the machine network CIDR. A good default is `192.168.126.0/24`.
-    * `CLUSTER_SVC_NETWORK` - the cluster service network CIDR. A good default is `172.30.0.0/16`.
-    * `CLUSTER_NETWORK` - the cluster network CIDR. A good default is `10.128.0.0/14`.
+    * `IP_STACK` - one of `v4`, `v6`, `v4v6` (dual-stack primary v4), `v6v4` (dual-stack primary v6). **In dual-stack, the primary family is always listed first in `install-config.yaml`**.
+    * `MACHINE_NETWORK_V4` - IPv4 machine network CIDR. Default `192.168.126.0/24`.
+    * `MACHINE_NETWORK_V6` - IPv6 machine network CIDR. Default `fd00:0:0:126::/64`.
+    * `CLUSTER_SVC_NETWORK_V4` - IPv4 service network CIDR. Default `172.30.0.0/16`.
+    * `CLUSTER_SVC_NETWORK_V6` - IPv6 service network CIDR. Default `fd02:0:0:0::/112`.
+    * `CLUSTER_NETWORK_V4` - IPv4 cluster network CIDR. Default `10.128.0.0/14`.
+    * `CLUSTER_NETWORK_V6` - IPv6 cluster network CIDR. Default `fd01:0:0:0::/48`.
     * `CLUSTER_NAME` - the cluster name, the default is `test-cluster`.
     * `BASE_DOMAIN` - the cluster base domain, the default is `redhat.com`.
 - Download the ISO to the workdir `./download_live_iso.sh sno-workdir/base.iso`
@@ -105,6 +109,57 @@ Automatic mode using Makefiles, currently supports SNO deployments on two virtua
     - Create a libvirt network & VM.
     - Boot the VM with that ISO.
 - You can now monitor the progress using `abi-wait-complete` or `make ssh` and `journalctl -f -u assisted-service.service` or `kubectl --kubeconfig ./sno-workdir/auth/kubeconfig get clusterversion`.
+
+### Host IP configuration (ABI flow)
+
+For the ABI flow, the host IP is configured via **AgentConfig `hosts[].networkConfig` (nmstate)** (static IP + DNS + default route). This avoids relying on DHCP reservations to force a specific host address.
+
+- The generated `agent-config.yaml` is rendered by `render-agent-config.py` when `AGENT_CONFIG_RENDER=1` (default).
+- `make start-iso-abi` still configures local DNS records (`api.*` / `apps.*`) on the libvirt network gateway so the hostnames resolve correctly.
+- Interface naming differs by platform:
+  - libvirt guests typically use **`ens3`** (default `HOST_IFNAME=ens3`)
+  - bare metal often uses names like **`eno1`** (override via `HOST_IFNAME=eno1`)
+
+## IP stack examples (ABI flow)
+
+IPv4 only:
+
+```bash
+export IP_STACK=v4
+export MACHINE_NETWORK_V4=192.168.126.0/24
+export CLUSTER_NETWORK_V4=10.128.0.0/14
+export CLUSTER_SVC_NETWORK_V4=172.30.0.0/16
+export HOST_IP_V4=192.168.126.10
+export HOST_IFNAME=ens3
+make start-iso-abi
+```
+
+IPv6 only:
+
+```bash
+export IP_STACK=v6
+export MACHINE_NETWORK_V6=fd00:0:0:126::/64
+export HOST_IP_V6=fd00:0:0:126::10
+export HOST_IFNAME=ens3
+make start-iso-abi
+```
+
+Dual-stack, primary IPv4 (v4v6):
+
+```bash
+export IP_STACK=v4v6
+export HOST_IFNAME=ens3
+make start-iso-abi
+```
+
+Dual-stack, primary IPv6 (v6v4):
+
+```bash
+export IP_STACK=v6v4
+export HOST_IP_V6=fd00:0:0:126::10
+export HOST_IFNAME=ens3
+make start-iso-abi
+```
 
 # Other notes
 

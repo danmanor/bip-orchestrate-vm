@@ -5,5 +5,5 @@ if [ -z ${NET_NAME+x} ]; then
 	exit 1
 fi
 
-sudo virsh net-undefine "$NET_NAME"
-sudo virsh net-destroy "$NET_NAME"
+sudo virsh net-destroy "$NET_NAME" >/dev/null 2>&1 || true
+sudo virsh net-undefine "$NET_NAME" >/dev/null 2>&1 || true
